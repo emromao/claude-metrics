@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Version: 12
+# Version: 13
 # Last Changed: 2026-03-22 UTC
-# Installs the claude-metrics MCP server and stop hook into the user's
-# Claude Code configuration. Supports two hook modes: direct (default)
-# and MCP-based.
+# Installs claude-metrics in one of three modes:
+#   hook-only (default) — lightweight, no MCP server
+#   full                — MCP server + direct hook
+#   mcp                 — MCP server + MCP-based hook
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -12,8 +13,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_DIR="${HOME}/.claude"
 MCP_DIR="${CLAUDE_DIR}/mcp-servers/claude-metrics"
 HOOKS_DIR="${CLAUDE_DIR}/hooks"
-INSTALL_HOOK=true
-HOOK_MODE="direct"  # "direct" = fast hook-only, "mcp" = current MCP-based
+# Modes: "hook-only" (default), "full", "mcp", "no-hook"
+INSTALL_MODE="hook-only"
 
 function usage() {
   # Print help text.
@@ -21,21 +22,27 @@ function usage() {
   cat <<'HELP'
 Usage: install.sh [OPTIONS]
 
-Installs the claude-metrics MCP server and stop hook.
+Installs claude-metrics for Claude Code.
 
-Options:
-  --mcp         Use MCP-based hook (slower but shows tool call in UI)
-  --no-hook     Skip installing the stop hook (MCP server only)
-  --uninstall   Remove installed files (does not modify settings.json)
+Modes:
+  (default)     Hook-only — lightweight, no MCP server registered.
+                The stop hook computes metrics directly (~200ms).
+                No extra dependencies beyond Python stdlib + server.py.
+
+  --full        Hook + MCP server — installs the direct hook AND
+                registers the MCP server for interactive tools
+                (get_session_detail, get_context_breakdown).
+
+  --mcp         MCP-based hook — original approach where the hook
+                tells Claude to call the MCP tool (~3-4s, tool call
+                visible in the UI). Also registers the MCP server.
+
+  --no-hook     MCP server only — no automatic metrics appending.
+                Call tools manually mid-conversation.
+
+Other options:
+  --uninstall   Remove all installed files
   -h, --help    Show this help
-
-Hook modes:
-  Default (direct):  Hook computes metrics inline (~200ms, no UI noise)
-  --mcp:             Hook tells Claude to call the MCP tool (~3-4s,
-                     MCP tool call visible in the UI)
-
-Both modes install the MCP server for interactive use of
-get_session_detail and get_context_breakdown.
 HELP
 }
 
@@ -82,25 +89,25 @@ function install_server() {
   # Inputs: none / Outputs: files copied
   mkdir -p "${MCP_DIR}"
   cp "${SCRIPT_DIR}/src/server.py" "${MCP_DIR}/server.py"
-  log_info "Installed server to ${MCP_DIR}/server.py"
+  log_info "Installed server.py to ${MCP_DIR}/"
 }
 
-function install_hook() {
-  # Copy the appropriate stop hook based on mode.
+function install_hook_direct() {
+  # Copy the direct-mode stop hook.
   # Inputs: none / Outputs: files copied
   mkdir -p "${HOOKS_DIR}"
-  local hook_src hook_name
-  if [[ "${HOOK_MODE}" == "direct" ]]; then
-    hook_src="${SCRIPT_DIR}/hooks/metrics-stop-direct.sh"
-    hook_name="metrics-stop-direct.sh"
-    log_info "Installing direct-mode hook (fast, no MCP call)"
-  else
-    hook_src="${SCRIPT_DIR}/hooks/metrics-stop-check.sh"
-    hook_name="metrics-stop-check.sh"
-    log_info "Installing MCP-mode hook (calls MCP tool)"
-  fi
-  cp "${hook_src}" "${HOOKS_DIR}/${hook_name}"
-  log_info "Installed hook to ${HOOKS_DIR}/${hook_name}"
+  cp "${SCRIPT_DIR}/hooks/metrics-stop-direct.sh" \
+    "${HOOKS_DIR}/metrics-stop-direct.sh"
+  log_info "Installed direct-mode hook"
+}
+
+function install_hook_mcp() {
+  # Copy the MCP-mode stop hook.
+  # Inputs: none / Outputs: files copied
+  mkdir -p "${HOOKS_DIR}"
+  cp "${SCRIPT_DIR}/hooks/metrics-stop-check.sh" \
+    "${HOOKS_DIR}/metrics-stop-check.sh"
+  log_info "Installed MCP-mode hook"
 }
 
 function register_mcp() {
@@ -119,18 +126,39 @@ function register_mcp() {
     log_info "Registered MCP server via claude CLI"
   else
     log_info "claude CLI not found — add manually:"
-    log_info "  claude mcp add claude-metrics -s user -- ${py} ${server_path}"
+    log_info "  claude mcp add claude-metrics -s user -- " \
+      "${py} ${server_path}"
   fi
 }
 
 function uninstall() {
-  # Remove installed files (both hook variants).
+  # Remove all installed files (both hook variants + MCP server).
   # Inputs: none / Outputs: files removed
   rm -f "${MCP_DIR}/server.py"
+  rm -f "${MCP_DIR}/requirements.txt"
   rmdir "${MCP_DIR}" 2>/dev/null || true
   rm -f "${HOOKS_DIR}/metrics-stop-check.sh"
   rm -f "${HOOKS_DIR}/metrics-stop-direct.sh"
-  log_info "Uninstalled. Remove MCP entry and hook from settings.json manually."
+  if command -v claude &>/dev/null; then
+    claude mcp remove claude-metrics -s user 2>/dev/null || true
+    log_info "Removed MCP server registration"
+  fi
+  log_info "Uninstalled. Remove the hook entry from settings.json manually."
+}
+
+function print_hook_config() {
+  # Print the settings.json snippet for the installed hook.
+  # Inputs: $1=hook filename / Outputs: stdout
+  local hook_file="$1"
+  echo "  Add the stop hook to ~/.claude/settings.json:"
+  echo ""
+  echo '     "hooks": {'
+  echo '       "Stop": [{'
+  echo '         "hooks": [{"type": "command",'
+  echo "           \"command\": \"bash ~/.claude/hooks/${hook_file}\","
+  echo '           "timeout": 10}]'
+  echo '       }]'
+  echo '     }'
 }
 
 function main() {
@@ -140,8 +168,9 @@ function main() {
     case "$1" in
       -h|--help)    usage; exit 0 ;;
       --uninstall)  uninstall; exit 0 ;;
-      --no-hook)    INSTALL_HOOK=false; shift ;;
-      --mcp)        HOOK_MODE="mcp"; shift ;;
+      --full)       INSTALL_MODE="full"; shift ;;
+      --mcp)        INSTALL_MODE="mcp"; shift ;;
+      --no-hook)    INSTALL_MODE="no-hook"; shift ;;
       *)
         echo "Unknown option: $1" >&2
         usage >&2
@@ -161,48 +190,70 @@ function main() {
   py_version=$("${py}" --version 2>&1) || true
   log_info "Using Python: ${py} (${py_version})"
 
-  install_deps "${py}"
+  # Always install server.py (needed by both hook and MCP modes)
   install_server
 
-  if [[ "${INSTALL_HOOK}" == "true" ]]; then
-    install_hook
-  else
-    log_info "Skipping stop hook (--no-hook)"
-  fi
+  case "${INSTALL_MODE}" in
+    hook-only)
+      # Lightweight: hook + server.py only, no MCP registration
+      install_hook_direct
+      echo ""
+      echo "=== Installed (hook-only mode) ==="
+      echo ""
+      echo "  No MCP server registered — the hook computes metrics"
+      echo "  directly from server.py (~200ms, no UI noise)."
+      echo ""
+      print_hook_config "metrics-stop-direct.sh"
+      echo ""
+      echo "  To also get interactive tools (get_session_detail,"
+      echo "  get_context_breakdown), re-run with --full."
+      ;;
 
-  register_mcp "${py}"
+    full)
+      # Hook + MCP server for interactive tools
+      install_deps "${py}"
+      install_hook_direct
+      register_mcp "${py}"
+      echo ""
+      echo "=== Installed (full mode) ==="
+      echo ""
+      echo "  Direct hook (~200ms) + MCP server for interactive tools."
+      echo ""
+      print_hook_config "metrics-stop-direct.sh"
+      ;;
+
+    mcp)
+      # MCP-based hook + MCP server
+      install_deps "${py}"
+      install_hook_mcp
+      register_mcp "${py}"
+      echo ""
+      echo "=== Installed (MCP mode) ==="
+      echo ""
+      echo "  Hook tells Claude to call MCP tool (~3-4s, visible in UI)."
+      echo ""
+      print_hook_config "metrics-stop-check.sh"
+      ;;
+
+    no-hook)
+      # MCP server only, no hook
+      install_deps "${py}"
+      register_mcp "${py}"
+      echo ""
+      echo "=== Installed (no-hook mode) ==="
+      echo ""
+      echo "  MCP server only — call tools manually:"
+      echo "    get_session_metrics, get_session_detail, get_context_breakdown"
+      ;;
+
+    *)
+      echo "Error: unknown install mode '${INSTALL_MODE}'" >&2
+      exit 1
+      ;;
+  esac
 
   echo ""
-  echo "=== Installation Complete ==="
-  echo ""
-
-  if [[ "${INSTALL_HOOK}" == "true" ]]; then
-    local hook_file
-    if [[ "${HOOK_MODE}" == "direct" ]]; then
-      hook_file="metrics-stop-direct.sh"
-    else
-      hook_file="metrics-stop-check.sh"
-    fi
-    echo "Next steps:"
-    echo "  1. Add the stop hook to ~/.claude/settings.json:"
-    echo '     "hooks": {'
-    echo '       "Stop": [{'
-    echo '         "hooks": [{"type": "command",'
-    echo "           \"command\": \"bash ~/.claude/hooks/${hook_file}\"}]"
-    echo '       }]'
-    echo '     }'
-    echo "  2. Restart Claude Code to load the new MCP server"
-    echo ""
-    if [[ "${HOOK_MODE}" == "direct" ]]; then
-      echo "Mode: direct (metrics computed in hook, ~200ms, no UI noise)"
-    else
-      echo "Mode: MCP (Claude calls MCP tool, ~3-4s, tool call visible)"
-    fi
-  else
-    echo "Restart Claude Code to load the new MCP server."
-    echo ""
-    echo "To also install the stop hook later, re-run without --no-hook."
-  fi
+  echo "  Restart Claude Code to apply changes."
 }
 
 main "$@"
