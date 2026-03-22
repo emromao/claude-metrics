@@ -38,7 +38,7 @@ fi
 # Dedup: skip if we already injected metrics in the last 60 seconds.
 if [[ -f "${MARKER_FILE}" ]]; then
   last_inject=$(cat "${MARKER_FILE}" 2>/dev/null || echo "0")
-  now=$(date +%s)
+  now=$(date +%s 2>/dev/null || echo "0")
   if (( now - last_inject < 15 )); then
     exit 0
   fi
@@ -50,7 +50,7 @@ INPUT=$(head -c 2097152)
 export PYTHONIOENCODING=utf-8
 
 # Single Python call: check guards, compute metrics if needed.
-RESULT=$(echo "${INPUT}" | "${PYTHON}" -c "
+RESULT=$(printf '%s' "${INPUT}" | "${PYTHON}" -c "
 import sys, json, os, importlib.util
 
 try:
