@@ -34,7 +34,7 @@ No extra dependencies — just a bash hook and Python 3.8+.
 ## Install
 
 ```bash
-git clone https://github.com/YOUR_USER/claude-metrics.git
+git clone https://github.com/emromao/claude-metrics.git
 cd claude-metrics
 bash install.sh
 ```
