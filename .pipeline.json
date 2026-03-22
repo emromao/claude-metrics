@@ -7,6 +7,10 @@
   ],
   "has_tests": false,
   "shellcheck_files": [
-    "hooks/metrics-stop-check.sh"
+    "hooks/metrics-stop-check.sh",
+    "hooks/metrics-stop-direct.sh",
+    "install.sh",
+    "scripts/hook_check_deps.sh",
+    "scripts/hook_simplify.sh"
   ]
 }

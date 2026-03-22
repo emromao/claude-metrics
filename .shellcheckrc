@@ -2,3 +2,5 @@
 enable=all
 shell=bash
 extended-analysis=true
+# SC2310: function in || is intentional — we catch failure gracefully
+disable=SC2310

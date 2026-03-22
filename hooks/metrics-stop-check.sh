@@ -1,38 +1,66 @@
 #!/usr/bin/env bash
 # Metrics Stop hook — reminds Claude to append session metrics one-liner.
-# Version: 10
-# Last Changed: 2026-03-21 UTC
+# Version: 11
+# Last Changed: 2026-03-22 UTC
 
 set -Eeuo pipefail
 IFS=$'\n\t'
 
+# Detect available Python binary (cross-platform: Windows, macOS, Linux)
+function _find_python() {
+  # Try common Python binary names in preference order.
+  # Inputs: none / Outputs: stdout (binary name) or exit 1
+  local bin
+  for bin in python3 python py; do
+    if command -v "${bin}" &>/dev/null; then
+      echo "${bin}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+PYTHON=""
+PYTHON=$(_find_python) || true
+if [[ -z "${PYTHON}" ]]; then
+  echo "No Python found — skipping metrics hook" >&2
+  exit 0
+fi
+
 INPUT=$(cat)
 
-# Prevent infinite loop — if already triggered, let Claude stop
-STOP_ACTIVE=$(echo "${INPUT}" | python3 -c "
+# Single Python call: parse JSON, check stop_hook_active, check for metrics
+# pattern in last_assistant_message. Exits 0 if metrics already present or
+# hook is re-firing; prints "block" if metrics are missing.
+DECISION=$(echo "${INPUT}" | "${PYTHON}" -c "
 import sys, json
-print(json.load(sys.stdin).get('stop_hook_active', False))
-" 2>/dev/null || echo "False")
 
-if [[ "${STOP_ACTIVE}" == "True" ]]; then
-  exit 0
-fi
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print('allow')
+    sys.exit(0)
 
-# Extract last assistant message directly from the hook input
-LAST_MSG=$(echo "${INPUT}" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-print(data.get('last_assistant_message', ''))
-" 2>/dev/null || echo "")
+if data.get('stop_hook_active', False):
+    print('allow')
+    sys.exit(0)
 
-# Check if the metrics one-liner is already present
-# Look for the progress bar + pipe separator pattern
-if echo "${LAST_MSG}" | grep -qP '[\x{2593}\x{2591}].*%.*\x{2502}'; then
-  exit 0
-fi
+msg = data.get('last_assistant_message', '')
 
-# Also check for the simpler ascii fallback pattern
-if echo "${LAST_MSG}" | grep -qE 'ctx:.*%.*Tools:'; then
+# Progress bar chars: \u2593 (dark shade) \u2591 (light shade) \u2502 (pipe)
+if ('\u2593' in msg or '\u2591' in msg) and '%' in msg and '\u2502' in msg:
+    print('allow')
+    sys.exit(0)
+
+# ASCII fallback pattern
+if 'ctx:' in msg and '%' in msg and 'Tools:' in msg:
+    print('allow')
+    sys.exit(0)
+
+print('block')
+" 2>/dev/null || echo "allow")
+
+if [[ "${DECISION}" == "allow" ]]; then
   exit 0
 fi
 
