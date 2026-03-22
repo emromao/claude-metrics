@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-# Version: 14
+# Version: 15
 # Last Changed: 2026-03-22 UTC
-"""Claude Metrics MCP server.
+"""Claude Metrics — session metrics engine.
 
 Reads Claude Code session JSONL files to provide real-time token usage,
-cost tracking, and context window composition analysis. Designed to be
-called inline during conversations so metrics appear in the chat flow.
+cost tracking, and context window composition analysis.
 
-No external dependencies beyond the MCP SDK.
+No external dependencies — Python 3.8+ stdlib only.
 """
 from __future__ import annotations
 
@@ -18,9 +17,6 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-# MCP SDK import is deferred to __main__ block so helper functions can be
-# imported by the stop hook without requiring the mcp package.
 
 # ── Configuration ────────────────────────────────────────────────────────
 
@@ -468,6 +464,24 @@ def _build_compact_line(
     )
 
 
+def _display_width(text: str) -> int:
+    """Estimate the display width of a string in a monospace terminal.
+
+    Most emoji and CJK characters occupy 2 columns. Standard ASCII and
+    box-drawing characters occupy 1 column.
+    """
+    import unicodedata
+    width = 0
+    for ch in text:
+        cat = unicodedata.category(ch)
+        # Emoji (So = Symbol, other) and wide chars typically 2 columns
+        if cat == "So" or unicodedata.east_asian_width(ch) in ("W", "F"):
+            width += 2
+        else:
+            width += 1
+    return width
+
+
 def _build_detail_view(
     totals: dict[str, Any],
     cost: float,
@@ -477,16 +491,19 @@ def _build_detail_view(
     context_components: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build the detailed box-drawn metrics view."""
-    W = 53  # inner width
+    W = 55  # target display width (inner content)
 
     def row(text: str) -> str:
-        return f"\u2502  {text:<{W}}\u2502"
+        # Pad to W display columns, accounting for wide emoji chars
+        dw = _display_width(text)
+        padding = max(0, W - dw)
+        return f"\u2502 {text}{' ' * padding} \u2502"
 
     def sep() -> str:
-        return f"\u251c{'\u2500' * (W + 3)}\u2524"
+        return f"\u251c{'\u2500' * (W + 2)}\u2524"
 
     lines = [
-        f"\u250c{'\u2500' * (W + 3)}\u2510",
+        f"\u250c{'\u2500' * (W + 2)}\u2510",
         row(f"\u25c6 Claude Session Metrics"),
         sep(),
         # Session info
@@ -599,7 +616,7 @@ def _build_detail_view(
         shown = trend_parts[:3] + (["..."] if len(trend_parts) > 6 else []) + trend_parts[-3:]
         lines.append(row(f"  {' \u2192 '.join(shown)}"))
 
-    lines.append(f"\u2514{'\u2500' * (W + 3)}\u2518")
+    lines.append(f"\u2514{'\u2500' * (W + 2)}\u2518")
     return "\n".join(lines)
 
 
@@ -729,10 +746,10 @@ def _build_context_components(
 
 
 def compute_formatted_metrics(workspace: str = "") -> str | None:
-    """Compute the compact one-liner without MCP server overhead.
+    """Compute the compact one-liner.
 
-    Called directly by the stop hook to avoid an extra LLM turn.
-    Returns the formatted string, or None on any error.
+    Called by the stop hook to auto-append metrics.
+    Returns the formatted string, or None on error.
     """
     session_file = _find_session_file(workspace)
     if not session_file:
@@ -752,181 +769,31 @@ def compute_formatted_metrics(workspace: str = "") -> str | None:
     return _build_compact_line(totals, cost, ctx_pct, duration_min)
 
 
-# ── MCP Server (only when run directly) ─────────────────────────────────
+def compute_detail_metrics(workspace: str = "") -> str | None:
+    """Compute the full box-drawn detail view.
 
-if __name__ == "__main__":
-    from mcp.server.fastmcp import FastMCP
+    Called by the /metrics skill for extended stats.
+    Returns the detail string, or None on error.
+    """
+    session_file = _find_session_file(workspace)
+    if not session_file:
+        return None
 
-    mcp = FastMCP("claude-metrics")
+    totals = _parse_session(session_file)
+    if totals["turns"] == 0:
+        return None
 
-    @mcp.tool()
-    def get_session_metrics(workspace: str = "") -> dict[str, Any]:
-        """Get token usage, cost, and context window metrics for the current
-        Claude Code session.
+    model = totals["model"] or "unknown"
+    pricing = _get_pricing(model)
+    max_ctx = _get_max_context(model)
+    cost = _compute_cost(totals, pricing)
+    ctx_pct = (totals["last_turn_input"] / max_ctx * 100) if max_ctx else 0
+    duration_min = _compute_duration(totals["first_ts"], totals["last_ts"])
 
-        Args:
-            workspace: Workspace hash or path (e.g., 'd--Lab-workspaces-Homelab'
-                       or 'd:/Lab/workspaces/Homelab'). If empty, uses the most
-                       recently active session across all workspaces.
+    components = _build_context_components(
+        session_file, totals["last_turn_input"]
+    )
 
-        Returns metrics including token counts, cost in USD, context window
-        percentage, turn count, and session duration. The 'formatted' field
-        contains a compact one-liner with emoji context indicator. Note:
-        metrics reflect usage up to (but not including) the current turn.
-        """
-        session_file = _find_session_file(workspace)
-        if not session_file:
-            return {"error": "No session file found"}
-
-        totals = _parse_session(session_file)
-        if totals["turns"] == 0:
-            return {"error": "No assistant turns found in session"}
-
-        model = totals["model"] or "unknown"
-        pricing = _get_pricing(model)
-        max_ctx = _get_max_context(model)
-        cost = _compute_cost(totals, pricing)
-        ctx_pct = (
-            totals["last_turn_input"] / max_ctx * 100
-        ) if max_ctx else 0
-        duration_min = _compute_duration(
-            totals["first_ts"], totals["last_ts"]
-        )
-
-        total_tokens = (
-            totals["input_tokens"]
-            + totals["output_tokens"]
-            + totals["cache_write_tokens"]
-            + totals["cache_read_tokens"]
-        )
-
-        return {
-            "session_file": session_file.name,
-            "model": model,
-            "version": totals["version"],
-            "entrypoint": totals["entrypoint"],
-            "git_branch": totals["git_branch"],
-            "permission_mode": totals["permission_mode"],
-            "speed": totals["speed"],
-            "service_tier": totals["service_tier"],
-            "turns": totals["turns"],
-            "duration_min": round(duration_min, 1),
-            "tokens": {
-                "input": totals["input_tokens"],
-                "output": totals["output_tokens"],
-                "cache_write": totals["cache_write_tokens"],
-                "cache_read": totals["cache_read_tokens"],
-                "cache_1h": totals["cache_1h_tokens"],
-                "cache_5m": totals["cache_5m_tokens"],
-                "total": total_tokens,
-                "last_turn_context": totals["last_turn_input"],
-                "max_context_seen": totals["max_context_seen"],
-            },
-            "cost_usd": round(cost, 2),
-            "context": {
-                "used_pct": round(ctx_pct, 1),
-                "used_tokens": totals["last_turn_input"],
-                "max_tokens": max_ctx,
-                "peak_tokens": totals["max_context_seen"],
-                "peak_pct": round(
-                    totals["max_context_seen"] / max_ctx * 100, 1
-                ) if max_ctx else 0,
-            },
-            "activity": {
-                "stop_reasons": dict(totals["stop_reasons"]),
-                "web_searches": totals["web_searches"],
-                "web_fetches": totals["web_fetches"],
-                "tool_calls": totals["tool_calls"],
-                "sidechain_turns": totals["sidechain_turns"],
-                "sidechain_input": totals["sidechain_input"],
-                "sidechain_output": totals["sidechain_output"],
-            },
-            "formatted": _build_compact_line(
-                totals, cost, ctx_pct, duration_min
-            ),
-        }
-
-    @mcp.tool()
-    def get_session_detail(workspace: str = "") -> dict[str, Any]:
-        """Get a detailed, formatted view of session metrics with box-drawn
-        tables, progress bars, context composition, and trend data.
-
-        Args:
-            workspace: Workspace hash or path. If empty, uses the most
-                       recently active session.
-
-        Returns a 'detail' field with the full box-drawn view suitable for
-        displaying inline in the Claude Code chat. Also returns raw data.
-        """
-        session_file = _find_session_file(workspace)
-        if not session_file:
-            return {"error": "No session file found"}
-
-        totals = _parse_session(session_file)
-        if totals["turns"] == 0:
-            return {"error": "No assistant turns found in session"}
-
-        model = totals["model"] or "unknown"
-        pricing = _get_pricing(model)
-        max_ctx = _get_max_context(model)
-        cost = _compute_cost(totals, pricing)
-        ctx_pct = (
-            totals["last_turn_input"] / max_ctx * 100
-        ) if max_ctx else 0
-        duration_min = _compute_duration(
-            totals["first_ts"], totals["last_ts"]
-        )
-
-        components = _build_context_components(
-            session_file, totals["last_turn_input"]
-        )
-
-        detail = _build_detail_view(
-            totals, cost, ctx_pct, duration_min, max_ctx, components
-        )
-
-        return {
-            "formatted": _build_compact_line(
-                totals, cost, ctx_pct, duration_min
-            ),
-            "detail": detail,
-            "context_components": components,
-        }
-
-    @mcp.tool()
-    def get_context_breakdown(workspace: str = "") -> dict[str, Any]:
-        """Estimate what is filling the current context window.
-
-        Reads CLAUDE.md files, memory files, and MCP configs to estimate
-        each component's contribution to the context window.
-
-        Args:
-            workspace: Workspace hash or path. If empty, uses the most
-                       recently active session.
-
-        Returns a breakdown of estimated token usage by component.
-        """
-        session_file = _find_session_file(workspace)
-        if not session_file:
-            return {"error": "No session file found"}
-
-        totals = _parse_session(session_file)
-        model = totals["model"] or "claude-opus-4-6"
-        max_ctx = _get_max_context(model)
-        last_turn_input = totals["last_turn_input"]
-
-        components = _build_context_components(
-            session_file, last_turn_input
-        )
-
-        return {
-            "model": model,
-            "context_max": max_ctx,
-            "last_turn_input": last_turn_input,
-            "used_pct": round(
-                last_turn_input / max_ctx * 100, 1
-            ) if max_ctx else 0,
-            "components": components,
-        }
-
-    mcp.run(transport="stdio")
+    return _build_detail_view(
+        totals, cost, ctx_pct, duration_min, max_ctx, components
+    )
