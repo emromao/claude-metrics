@@ -6,7 +6,7 @@
 # Computes the metrics one-liner directly via server.py import (~200ms).
 # Self-contained — works alongside any other stop hooks without conflicts.
 #
-# Dedup: uses a 60-second marker file to prevent duplicate injection when
+# Dedup: uses a 15-second marker file to prevent duplicate injection when
 # parallel stop hooks (e.g. cognee) cause additional stop cycles.
 
 set -Eeuo pipefail

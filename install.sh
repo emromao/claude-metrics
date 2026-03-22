@@ -62,15 +62,26 @@ function install_files() {
   # Inputs: none / Outputs: files copied
   mkdir -p "${SERVER_DIR}" "${HOOKS_DIR}" "${SKILL_DIR}"
 
+  [[ -f "${SERVER_DIR}/server.py" ]] \
+    && log_info "Updating existing server.py"
   cp "${SCRIPT_DIR}/src/server.py" "${SERVER_DIR}/server.py"
   log_info "Copied server.py"
 
+  [[ -f "${HOOKS_DIR}/metrics-stop-direct.sh" ]] \
+    && log_info "Updating existing stop hook"
   cp "${SCRIPT_DIR}/hooks/metrics-stop-direct.sh" \
     "${HOOKS_DIR}/metrics-stop-direct.sh"
   log_info "Copied stop hook"
 
+  [[ -f "${SKILL_DIR}/SKILL.md" ]] \
+    && log_info "Updating existing /metrics skill"
   cp "${SCRIPT_DIR}/skills/metrics/SKILL.md" "${SKILL_DIR}/SKILL.md"
   log_info "Copied /metrics skill"
+
+  local style_dir="${CLAUDE_DIR}/skills/metrics-style"
+  mkdir -p "${style_dir}"
+  cp "${SCRIPT_DIR}/skills/metrics-style/SKILL.md" "${style_dir}/SKILL.md"
+  log_info "Copied /metrics-style skill"
 }
 
 function uninstall() {
@@ -78,13 +89,18 @@ function uninstall() {
   # Inputs: none / Outputs: files removed
   rm -f "${SERVER_DIR}/server.py"
   rmdir "${SERVER_DIR}" 2>/dev/null || true
+  rmdir "${CLAUDE_DIR}/lib" 2>/dev/null || true
   rm -f "${HOOKS_DIR}/metrics-stop-direct.sh"
   rm -f "${SKILL_DIR}/SKILL.md"
   rmdir "${SKILL_DIR}" 2>/dev/null || true
+  rm -f "${CLAUDE_DIR}/skills/metrics-style/SKILL.md"
+  rmdir "${CLAUDE_DIR}/skills/metrics-style" 2>/dev/null || true
+  rm -f "${TMPDIR:-/tmp}/claude-metrics-injected"
   log_info "Files removed."
   echo ""
-  echo "To finish uninstalling, remove the Stop hook entry"
-  echo "for metrics-stop-direct.sh from ~/.claude/settings.json"
+  echo "To finish uninstalling:"
+  echo "  1. Remove the Stop hook entry from ~/.claude/settings.json"
+  echo "  2. Remove the Session Metrics section from CLAUDE.md"
 }
 
 function main() {
@@ -111,6 +127,15 @@ function main() {
     exit 1
   fi
   log_info "Using $("${py}" --version 2>&1)"
+
+  # Validate Python 3 (server.py uses f-strings, type unions, etc.)
+  local major
+  major=$("${py}" -c "import sys; print(sys.version_info.major)" 2>/dev/null) \
+    || true
+  if [[ "${major}" != "3" ]]; then
+    echo "Error: Python 3.8+ required; '${py}' is Python ${major:-unknown}." >&2
+    exit 1
+  fi
 
   install_files
 
