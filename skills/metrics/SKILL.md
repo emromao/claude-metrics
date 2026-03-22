@@ -35,6 +35,9 @@ else:
 
 2. Present the output directly — it is pre-formatted with box-drawing
    characters. Do not reformat or parse it.
+   **Do NOT append the compact metrics one-liner after showing the detail
+   view.** The detail view already contains all the metrics information.
+   The stop hook will also detect the detail view and skip appending.
 
 3. If the user asks about context specifically, mention which components
    are estimates (MCP schemas, system prompt) vs measured (file sizes).

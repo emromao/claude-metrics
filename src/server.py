@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 15
+# Version: 16
 # Last Changed: 2026-03-22 UTC
 """Claude Metrics — session metrics engine.
 
@@ -54,6 +54,9 @@ MAX_CONTEXT: dict[str, int] = {
 
 # Chars-per-token estimation heuristic
 CHARS_PER_TOKEN = 4
+
+# One-liner style: "simple" (default) or "ext-context"
+METRICS_STYLE = "simple"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -446,8 +449,9 @@ def _build_compact_line(
     # Model name — strip "claude-" prefix for compactness
     model = (totals["model"] or "unknown").replace("claude-", "")
 
-    # Sparkline and trend
+    # Sparkline and trend (limit to last 20 points for compact display)
     history = totals.get("context_history", [])
+    history = history[-20:] if len(history) > 20 else history
     spark = _sparkline(history, max_ctx)
     trend_arrow, trend_delta = _trend_indicator(history)
     trend_str = f"{trend_arrow} {trend_delta:+.1f}%" if history else ""
@@ -458,28 +462,72 @@ def _build_compact_line(
         f"/{_format_tokens(max_ctx)}"
         f" \u2502 \U0001f53c{inp_str} \U0001f53d{out_str}"
         f" \u2502 ${cost:.2f}"
-        f" \u2502 Tools:{tools} End:{ends}"
+        f" \u2502 Tool:{tools} End:{ends}"
         f" \u2502 {model} v{totals['version'] or '?'}"
         f" \u2502 {spark} {trend_str}"
     )
 
 
-def _display_width(text: str) -> int:
-    """Estimate the display width of a string in a monospace terminal.
+def _build_ext_context_line(
+    totals: dict[str, Any],
+    cost: float,
+    ctx_pct: float,
+    components: list[dict[str, Any]],
+) -> str:
+    """Build one-liner with inline context composition breakdown.
 
-    Most emoji and CJK characters occupy 2 columns. Standard ASCII and
-    box-drawing characters occupy 1 column.
+    Format:
+    🟢▓▓░░░░░░░░ 18.1% 181.1K/1.0M [ 3% CLAUDE.md | 2% MCP | 2% SYS | 93% CONVO ]
     """
-    import unicodedata
-    width = 0
-    for ch in text:
-        cat = unicodedata.category(ch)
-        # Emoji (So = Symbol, other) and wide chars typically 2 columns
-        if cat == "So" or unicodedata.east_asian_width(ch) in ("W", "F"):
-            width += 2
+    emoji = _ctx_emoji(ctx_pct)
+    bar = _progress_bar(ctx_pct, 10)
+    max_ctx = _get_max_context(totals["model"] or "unknown")
+
+    # Build context composition summary
+    parts: list[str] = []
+    for c in components:
+        pct = c.get("pct", 0)
+        if pct < 0.5:
+            continue  # skip negligible
+        # Shorten names for compact display
+        name = c["name"]
+        if "CLAUDE.md" in name:
+            label = "CLAUDE.md"
+        elif "MCP" in name:
+            label = "MCP"
+        elif "System" in name:
+            label = "SYS"
+        elif "Memory" in name:
+            label = "MEM"
+        elif "Conversation" in name:
+            label = "CONVO"
         else:
-            width += 1
-    return width
+            label = name[:8]
+        parts.append(f"{pct:.0f}% {label}")
+
+    comp_str = " | ".join(parts)
+
+    return (
+        f"{emoji}{bar} {ctx_pct:.1f}%"
+        f" {_format_tokens(totals['last_turn_input'])}"
+        f"/{_format_tokens(max_ctx)}"
+        f" [ {comp_str} ]"
+    )
+
+
+def set_metrics_style(style: str) -> None:
+    """Set the global one-liner style.
+
+    Valid values: "simple", "ext-context".
+    Raises ValueError for unrecognized styles.
+    """
+    global METRICS_STYLE
+    valid = ("simple", "ext-context")
+    if style not in valid:
+        raise ValueError(
+            f"Unknown metrics style {style!r}; expected one of {valid}"
+        )
+    METRICS_STYLE = style
 
 
 def _build_detail_view(
@@ -491,19 +539,16 @@ def _build_detail_view(
     context_components: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build the detailed box-drawn metrics view."""
-    W = 55  # target display width (inner content)
+    W = 55  # horizontal rule width
 
     def row(text: str) -> str:
-        # Pad to W display columns, accounting for wide emoji chars
-        dw = _display_width(text)
-        padding = max(0, W - dw)
-        return f"\u2502 {text}{' ' * padding} \u2502"
+        return f"\u2502 {text}"
 
     def sep() -> str:
-        return f"\u251c{'\u2500' * (W + 2)}\u2524"
+        return f"\u251c{'\u2500' * W}"
 
     lines = [
-        f"\u250c{'\u2500' * (W + 2)}\u2510",
+        f"\u250c{'\u2500' * W}",
         row(f"\u25c6 Claude Session Metrics"),
         sep(),
         # Session info
@@ -592,7 +637,7 @@ def _build_detail_view(
         row(
             f"  Web: {totals['web_searches']} search,"
             f" {totals['web_fetches']} fetch"
-            f"  \u2502  Tools: {totals['tool_calls']}"
+            f"  \u2502  Tool: {totals['tool_calls']}"
         )
     )
     if totals["sidechain_turns"] > 0:
@@ -616,7 +661,7 @@ def _build_detail_view(
         shown = trend_parts[:3] + (["..."] if len(trend_parts) > 6 else []) + trend_parts[-3:]
         lines.append(row(f"  {' \u2192 '.join(shown)}"))
 
-    lines.append(f"\u2514{'\u2500' * (W + 2)}\u2518")
+    lines.append(f"\u2514{'\u2500' * W}")
     return "\n".join(lines)
 
 
@@ -745,12 +790,17 @@ def _build_context_components(
 # ── Standalone helpers (used by stop hook via import) ────────────────────
 
 
-def compute_formatted_metrics(workspace: str = "") -> str | None:
+def compute_formatted_metrics(
+    workspace: str = "", style: str = ""
+) -> str | None:
     """Compute the compact one-liner.
 
     Called by the stop hook to auto-append metrics.
+    The ``style`` parameter overrides the global METRICS_STYLE when set.
     Returns the formatted string, or None on error.
     """
+    use_style = style or METRICS_STYLE
+
     session_file = _find_session_file(workspace)
     if not session_file:
         return None
@@ -765,6 +815,12 @@ def compute_formatted_metrics(workspace: str = "") -> str | None:
     cost = _compute_cost(totals, pricing)
     ctx_pct = (totals["last_turn_input"] / max_ctx * 100) if max_ctx else 0
     duration_min = _compute_duration(totals["first_ts"], totals["last_ts"])
+
+    if use_style == "ext-context":
+        components = _build_context_components(
+            session_file, totals["last_turn_input"]
+        )
+        return _build_ext_context_line(totals, cost, ctx_pct, components)
 
     return _build_compact_line(totals, cost, ctx_pct, duration_min)
 
