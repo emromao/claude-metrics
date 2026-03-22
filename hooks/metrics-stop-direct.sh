@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
-# Metrics Stop hook — computes and injects metrics inline.
-# Version: 4
+# Combined Stop hook — metrics injection + Cognee check in ONE block.
+# Version: 5
 # Last Changed: 2026-03-22 UTC
 #
-# Computes the metrics one-liner directly via server.py import (~200ms).
-# No extra dependencies or background processes required.
-#
-# Uses a marker file to prevent duplicate injection when other stop hooks
-# (e.g. Cognee) cause additional stop cycles in the same interaction.
+# Combines metrics and cognee into a single hook to prevent the
+# duplicate-injection problem caused by parallel stop hooks.
+# When two hooks block independently, each re-fire cycle can
+# produce a separate metrics line. One hook = one block = one line.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SERVER_PY="${HOME}/.claude/lib/claude-metrics/server.py"
 MARKER_FILE="${TMPDIR:-/tmp}/claude-metrics-injected"
 
 # Detect available Python binary (cross-platform: Windows, macOS, Linux).
@@ -36,15 +34,10 @@ if [[ -z "${PYTHON}" ]]; then
   exit 0
 fi
 
-if [[ ! -f "${SERVER_PY}" ]]; then
-  exit 0
-fi
-
-# Check marker: if we already injected metrics in the last 30s, skip.
-# This prevents duplicates when other stop hooks cause re-fire cycles.
+# Check marker: if we already injected in the last 60s, allow stop.
 if [[ -f "${MARKER_FILE}" ]]; then
   marker_age=$(( $(date +%s) - $(date -r "${MARKER_FILE}" +%s 2>/dev/null || echo 0) ))
-  if (( marker_age < 30 )); then
+  if (( marker_age < 60 )); then
     exit 0
   fi
 fi
@@ -52,10 +45,10 @@ fi
 # Read stdin (hook input JSON) with a size guard (max 2MB)
 INPUT=$(head -c 2097152)
 
-# Ensure UTF-8 output on Windows (emoji in metrics line)
 export PYTHONIOENCODING=utf-8
 
-# Single Python call: check if metrics present, compute if missing.
+# Single Python call: check stop_hook_active, check if metrics present,
+# compute metrics if missing, build combined block reason.
 RESULT=$(echo "${INPUT}" | "${PYTHON}" -c "
 import sys, json, os, importlib.util
 
@@ -65,38 +58,37 @@ except Exception:
     print('ALLOW')
     sys.exit(0)
 
-# Prevent infinite loop
 if data.get('stop_hook_active', False):
     print('ALLOW')
     sys.exit(0)
 
 msg = data.get('last_assistant_message', '')
 
-# Check if metrics one-liner is already present
-if ('\u2593' in msg or '\u2591' in msg) and '%' in msg and '\u2502' in msg:
-    print('ALLOW')
-    sys.exit(0)
+# Check if metrics already present (heavy pipe U+2503 or light U+2502)
+has_metrics = (
+    (('\u2593' in msg or '\u2591' in msg) and '%' in msg and ('\u2503' in msg or '\u2502' in msg))
+    or ('ctx:' in msg and '%' in msg and 'Tool:' in msg)
+)
 
-if 'ctx:' in msg and '%' in msg and 'Tool:' in msg:
+if has_metrics:
     print('ALLOW')
     sys.exit(0)
 
 # Compute metrics
+metrics_line = None
 server_file = os.path.expanduser('~/.claude/lib/claude-metrics/server.py')
-if not os.path.isfile(server_file):
-    print('ALLOW')
-    sys.exit(0)
+if os.path.isfile(server_file):
+    try:
+        spec = importlib.util.spec_from_file_location('server', server_file)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        metrics_line = mod.compute_formatted_metrics()
+    except Exception:
+        pass
 
-try:
-    spec = importlib.util.spec_from_file_location('server', server_file)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    formatted = mod.compute_formatted_metrics()
-    if formatted:
-        print('METRICS:' + formatted)
-    else:
-        print('ALLOW')
-except Exception:
+if metrics_line:
+    print('BLOCK:' + metrics_line)
+else:
     print('ALLOW')
 " 2>/dev/null || echo "ALLOW")
 
@@ -104,14 +96,16 @@ if [[ "${RESULT}" == "ALLOW" ]]; then
   exit 0
 fi
 
-if [[ "${RESULT}" == METRICS:* ]]; then
-  METRICS_LINE="${RESULT#METRICS:}"
-  # Write marker BEFORE outputting block — prevents duplicates
+if [[ "${RESULT}" == BLOCK:* ]]; then
+  METRICS_LINE="${RESULT#BLOCK:}"
+  # Write marker BEFORE outputting — prevents duplicates on re-fire
   touch "${MARKER_FILE}"
+
+  # Combined block reason: metrics + cognee in ONE decision
   cat <<HOOK_JSON
 {
   "decision": "block",
-  "reason": "[METRICS] Append this exact line at the very end of your response (do not call any tool, just paste it):\n\n\`${METRICS_LINE}\`"
+  "reason": "[METRICS] Append this exact line at the very end of your response (do not call any tool, just paste it):\n\n\`${METRICS_LINE}\`\n\n[COGNEE CHECK] Before appending the metrics line, review this conversation for insights worth storing to Cognee. Auto-store triggers: (1) non-obvious bug fix, (2) architecture decision, (3) cross-project pattern, (4) user personal info, (5) infrastructure change, (6) debugging insight. If ANY trigger applies, call mcp__cognee-memory__cognify NOW. If nothing to store, say so briefly, then append the metrics line."
 }
 HOOK_JSON
   exit 0
