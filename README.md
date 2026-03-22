@@ -7,7 +7,7 @@ Session metrics for Claude Code. See your token usage, costs, and context health
 Paste this in Claude Code and hit enter:
 
 ```text
-Install https://github.com/emromao/claude-metrics
+install https://github.com/emromao/claude-metrics
 ```
 
 ![Quick Install](docs/install.png)
