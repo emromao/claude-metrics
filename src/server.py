@@ -820,7 +820,10 @@ def _build_detail_view(
         for turn, ctx in history:
             trend_parts.append(f"T{turn}:{_format_tokens(ctx)}")
         # Show up to 6 data points
-        shown = trend_parts[:3] + (["..."] if len(trend_parts) > 6 else []) + trend_parts[-3:]
+        if len(trend_parts) <= 6:
+            shown = trend_parts
+        else:
+            shown = trend_parts[:3] + ["..."] + trend_parts[-3:]
         lines.append(row(f"  {' \u2192 '.join(shown)}"))
 
     lines.append(f"\u2514{'\u2500' * W}")
@@ -1005,7 +1008,7 @@ def _get_git_info(session_file: Path) -> dict[str, Any]:
                     pass  # binary files show "-"
 
     # Also count staged lines
-    staged_diff = _run_git(cwd, "diff", "--cached", "--numstat")
+    staged_diff = staged_out  # reuse — avoid double subprocess call
     if staged_diff:
         for line in staged_diff.splitlines():
             parts = line.split("\t")
