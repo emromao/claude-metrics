@@ -1,0 +1,11 @@
+# Gitleaks configuration — synced from pipeline-templates
+# Allowlist directories/patterns that contain sample data, not real secrets.
+
+[allowlist]
+  paths = [
+    '''examples/''',
+    '''docs/''',
+    '''tests/fixtures/''',
+    '''.*\.md$'''
+  ]
+  description = "Sample data, documentation, and test fixtures"

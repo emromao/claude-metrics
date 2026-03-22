@@ -1,0 +1,4 @@
+# ShellCheck configuration — synced from pipeline-templates
+enable=all
+shell=bash
+extended-analysis=true

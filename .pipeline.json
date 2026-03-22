@@ -1,0 +1,12 @@
+{
+  "_pipeline_version": 2,
+  "project_name": "claude-vscode-metrics",
+  "scan_dirs": [],
+  "branches": [
+    "master"
+  ],
+  "has_tests": false,
+  "shellcheck_files": [
+    "hooks/metrics-stop-check.sh"
+  ]
+}
