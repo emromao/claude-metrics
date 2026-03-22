@@ -2,7 +2,17 @@
 
 Session metrics for Claude Code. See your token usage, costs, and context health after every response.
 
-![Architecture](https://draw.emromao.com/api/drawing/19c6f8d3-8557-4b8f-b66e-1f166cceb31c/svg)
+## Quick Install
+
+Paste this in Claude Code and hit enter:
+
+```text
+Install https://github.com/emromao/claude-metrics
+```
+
+![Quick Install](docs/install.png)
+
+Claude will clone the repo, copy the files, and configure everything automatically.
 
 ## What it looks like
 
@@ -122,9 +132,9 @@ Then remove the Stop hook entry from `settings.json` and the Session Metrics sec
 
 ## Architecture
 
-[View the full architecture diagram](https://draw.emromao.com/editor/19c6f8d3-8557-4b8f-b66e-1f166cceb31c)
+![Architecture](docs/architecture.png)
 
-The stop hook computes metrics inline (~200ms) by importing `server.py` directly — no MCP server or extra LLM turn needed. A 15-second marker file prevents duplicates when other stop hooks (like cognee) cause re-fire cycles.
+The stop hook computes metrics inline (~200ms) by importing `server.py` directly — no MCP server or extra LLM turn needed. A 15-second marker file prevents duplicates when other stop hooks cause re-fire cycles.
 
 ## License
 
