@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # Metrics Stop hook — computes and injects metrics inline.
-# Version: 3
+# Version: 4
 # Last Changed: 2026-03-22 UTC
 #
 # Computes the metrics one-liner directly via server.py import (~200ms).
 # No extra dependencies or background processes required.
+#
+# Uses a marker file to prevent duplicate injection when other stop hooks
+# (e.g. Cognee) cause additional stop cycles in the same interaction.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
 
 SERVER_PY="${HOME}/.claude/lib/claude-metrics/server.py"
+MARKER_FILE="${TMPDIR:-/tmp}/claude-metrics-injected"
 
 # Detect available Python binary (cross-platform: Windows, macOS, Linux).
 function _find_python() {
@@ -29,13 +33,20 @@ PYTHON=""
 # shellcheck disable=SC2310
 PYTHON=$(_find_python) || true
 if [[ -z "${PYTHON}" ]]; then
-  # No Python — can't run, allow Claude to stop
   exit 0
 fi
 
 if [[ ! -f "${SERVER_PY}" ]]; then
-  # server.py missing — can't compute, allow Claude to stop
   exit 0
+fi
+
+# Check marker: if we already injected metrics in the last 30s, skip.
+# This prevents duplicates when other stop hooks cause re-fire cycles.
+if [[ -f "${MARKER_FILE}" ]]; then
+  marker_age=$(( $(date +%s) - $(date -r "${MARKER_FILE}" +%s 2>/dev/null || echo 0) ))
+  if (( marker_age < 30 )); then
+    exit 0
+  fi
 fi
 
 # Read stdin (hook input JSON) with a size guard (max 2MB)
@@ -45,39 +56,33 @@ INPUT=$(head -c 2097152)
 export PYTHONIOENCODING=utf-8
 
 # Single Python call: check if metrics present, compute if missing.
-# Uses importlib for explicit file loading (no sys.path manipulation).
 RESULT=$(echo "${INPUT}" | "${PYTHON}" -c "
 import sys, json, os, importlib.util
 
-# Parse hook input
 try:
     data = json.load(sys.stdin)
 except Exception:
     print('ALLOW')
     sys.exit(0)
 
-# Prevent infinite loop — if already re-firing after a block, allow stop
+# Prevent infinite loop
 if data.get('stop_hook_active', False):
     print('ALLOW')
     sys.exit(0)
 
 msg = data.get('last_assistant_message', '')
 
-# Check if metrics one-liner is already present in the response.
-# Progress bar chars: U+2593 (dark shade), U+2591 (light shade), U+2502 (pipe)
+# Check if metrics one-liner is already present
 if ('\u2593' in msg or '\u2591' in msg) and '%' in msg and '\u2502' in msg:
     print('ALLOW')
     sys.exit(0)
 
-# ASCII fallback pattern
-if 'ctx:' in msg and '%' in msg and 'Tools:' in msg:
+if 'ctx:' in msg and '%' in msg and 'Tool:' in msg:
     print('ALLOW')
     sys.exit(0)
 
-# Metrics not found — compute directly via importlib (explicit file load)
-server_file = os.path.expanduser(
-    '~/.claude/lib/claude-metrics/server.py'
-)
+# Compute metrics
+server_file = os.path.expanduser('~/.claude/lib/claude-metrics/server.py')
 if not os.path.isfile(server_file):
     print('ALLOW')
     sys.exit(0)
@@ -95,14 +100,14 @@ except Exception:
     print('ALLOW')
 " 2>/dev/null || echo "ALLOW")
 
-# Parse the result
 if [[ "${RESULT}" == "ALLOW" ]]; then
   exit 0
 fi
 
 if [[ "${RESULT}" == METRICS:* ]]; then
-  # Extract the formatted metrics line and inject it
   METRICS_LINE="${RESULT#METRICS:}"
+  # Write marker BEFORE outputting block — prevents duplicates
+  touch "${MARKER_FILE}"
   cat <<HOOK_JSON
 {
   "decision": "block",
@@ -112,5 +117,4 @@ HOOK_JSON
   exit 0
 fi
 
-# If we get here something unexpected happened — allow stop
 exit 0

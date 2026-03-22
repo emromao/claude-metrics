@@ -17,16 +17,37 @@ Change the compact one-liner format appended after each response.
 1. Show the user the available styles with examples:
 
 **simple** (default) -- Full metrics with token counts, cost, activity, sparkline:
-```
-🟢▓▓░░░░░░░░ 18.1% 181.1K/1.0M │ 🔼10.0K 🔽92.3K │ $114.79 │ Tools:175 End:46 │ opus-4-6 v2.1.81 │ ▁▂▃▄▅ ↗ +1.2%
-```
-
-**ext-context** -- Context composition focus, shows what fills the window:
-```
-🟢▓▓░░░░░░░░ 18.1% 181.1K/1.0M [ 3% CLAUDE.md | 2% MCP | 2% SYS | 93% CONVO ]
+```text
+🟢▓▓░░░░░░░░ 18.1% 181K/1M ┃ 🔼10K 🔽92K ┃ $114.79 ┃ Tool:175 End:46 ┃ opus-4-6 v2.1.81 ┃ ▁▂▃▄▅ ↗ +1.2%
 ```
 
-2. Ask the user which style they prefer (use the `AskUserQuestion` tool).
+**ext-context** -- Context composition focus:
+```text
+🟢▓▓░░░░░░░░ 18.1% 181K/1M [ 3% CLAUDE.md | 2% MCP | 2% SYS | 93% CONVO ]
+```
+
+**ext-all** -- Context composition + full metrics:
+```text
+🟢▓▓░░░░░░░░ 18.1% 181K/1M [ 3% CLAUDE.md | 93% CONVO ] ┃ 🔼10K 🔽92K ┃ $114 ┃ Tool:175 ┃ ▁▂▃▄▅ ↗ +1.2%
+```
+
+**minimal** -- Just the essentials:
+```text
+🟢 18.1% ┃ $114.79 ┃ T:435
+```
+
+**cost-focus** -- Spending-oriented:
+```text
+🟢▓▓░░░░░░░░ 18.1% 181K/1M ┃ $114.79 ┃ 🔼10K 🔽92K ┃ Tool:175 End:46
+```
+
+**compact** -- Dense, no sparkline:
+```text
+🟢 18.1% 181K/1M ┃ 🔼10K 🔽92K ┃ $114 ┃ T:175 E:46 ┃ opus-4-6
+```
+
+2. Ask the user which style they prefer (use the `AskUserQuestion` tool
+   with preview showing the example for each option).
 
 3. After the user selects a style, update the configuration by running:
 
@@ -50,7 +71,8 @@ print('Updated METRICS_STYLE to: SELECTED_STYLE')
 ```
 
 Replace `SELECTED_STYLE` in **both** places in the command above with the
-user's choice (`simple` or `ext-context`).
+user's choice (one of: simple, ext-context, ext-all, minimal, cost-focus,
+compact).
 
 4. Confirm the change to the user. Mention that the new style takes effect
    on the next response (no restart needed).

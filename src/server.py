@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 16
+# Version: 17
 # Last Changed: 2026-03-22 UTC
 """Claude Metrics — session metrics engine.
 
@@ -57,6 +57,15 @@ CHARS_PER_TOKEN = 4
 
 # One-liner style: "simple" (default) or "ext-context"
 METRICS_STYLE = "simple"
+
+VALID_STYLES = (
+    "simple",
+    "ext-context",
+    "ext-all",
+    "minimal",
+    "cost-focus",
+    "compact",
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -431,8 +440,8 @@ def _build_compact_line(
     """Build the compact one-liner with progress bar and emoji indicators.
 
     Format:
-    🟢▓▓▓░░░░░░░ 9.1% 91.4K/1M │ 🔼1.6K 🔽74K │ $40.14
-      │ Tools:87 End:28 │ opus-4-6 v2.1.79 │ ▁▂▃▃▂ ↘ -1.8%
+    🟢▓▓▓░░░░░░░ 9.1% 91.4K/1M ┃ 🔼1.6K 🔽74K ┃ $40.14
+      ┃ Tools:87 End:28 ┃ opus-4-6 v2.1.79 ┃ ▁▂▃▃▂ ↘ -1.8%
     """
     emoji = _ctx_emoji(ctx_pct)
     bar = _progress_bar(ctx_pct, 10)
@@ -460,11 +469,11 @@ def _build_compact_line(
         f"{emoji}{bar} {ctx_pct:.1f}%"
         f" {_format_tokens(totals['last_turn_input'])}"
         f"/{_format_tokens(max_ctx)}"
-        f" \u2502 \U0001f53c{inp_str} \U0001f53d{out_str}"
-        f" \u2502 ${cost:.2f}"
-        f" \u2502 Tool:{tools} End:{ends}"
-        f" \u2502 {model} v{totals['version'] or '?'}"
-        f" \u2502 {spark} {trend_str}"
+        f" \u2503 \U0001f53c{inp_str} \U0001f53d{out_str}"
+        f" \u2503 ${cost:.2f}"
+        f" \u2503 Tool:{tools} End:{ends}"
+        f" \u2503 {model} v{totals['version'] or '?'}"
+        f" \u2503 {spark} {trend_str}"
     )
 
 
@@ -515,17 +524,166 @@ def _build_ext_context_line(
     )
 
 
+def _build_ext_all_line(
+    totals: dict[str, Any],
+    cost: float,
+    ctx_pct: float,
+    duration_min: float,
+    components: list[dict[str, Any]],
+) -> str:
+    """Build one-liner combining context composition with full metrics.
+
+    Format:
+    🟢▓▓░░░░░░░░ 18.1% 181.1K/1.0M [ 3% CLAUDE.md | 2% MCP | 2% SYS | 93% CONVO ]
+      ┃ 🔼10.0K 🔽92.3K ┃ $114.79 ┃ Tool:175 End:46 ┃ opus-4-6 v2.1.81 ┃ ▁▂▃▄▅ ↗ +1.2%
+    """
+    emoji = _ctx_emoji(ctx_pct)
+    bar = _progress_bar(ctx_pct, 10)
+    max_ctx = _get_max_context(totals["model"] or "unknown")
+
+    # Context composition summary
+    parts: list[str] = []
+    for c in components:
+        pct = c.get("pct", 0)
+        if pct < 0.5:
+            continue
+        name = c["name"]
+        if "CLAUDE.md" in name:
+            label = "CLAUDE.md"
+        elif "MCP" in name:
+            label = "MCP"
+        elif "System" in name:
+            label = "SYS"
+        elif "Memory" in name:
+            label = "MEM"
+        elif "Conversation" in name:
+            label = "CONVO"
+        else:
+            label = name[:8]
+        parts.append(f"{pct:.0f}% {label}")
+    comp_str = " | ".join(parts)
+
+    # Token arrows
+    inp_str = _format_tokens(totals["input_tokens"])
+    out_str = _format_tokens(totals["output_tokens"])
+
+    # Stop reason counts
+    tools = totals["stop_reasons"].get("tool_use", 0)
+    ends = totals["stop_reasons"].get("end_turn", 0)
+
+    # Model name — strip "claude-" prefix for compactness
+    model = (totals["model"] or "unknown").replace("claude-", "")
+
+    # Sparkline and trend
+    history = totals.get("context_history", [])
+    history = history[-20:] if len(history) > 20 else history
+    spark = _sparkline(history, max_ctx)
+    trend_arrow, trend_delta = _trend_indicator(history)
+    trend_str = f"{trend_arrow} {trend_delta:+.1f}%" if history else ""
+
+    return (
+        f"{emoji}{bar} {ctx_pct:.1f}%"
+        f" {_format_tokens(totals['last_turn_input'])}"
+        f"/{_format_tokens(max_ctx)}"
+        f" [ {comp_str} ]"
+        f" \u2503 \U0001f53c{inp_str} \U0001f53d{out_str}"
+        f" \u2503 ${cost:.2f}"
+        f" \u2503 Tool:{tools} End:{ends}"
+        f" \u2503 {model} v{totals['version'] or '?'}"
+        f" \u2503 {spark} {trend_str}"
+    )
+
+
+def _build_minimal_line(
+    totals: dict[str, Any],
+    cost: float,
+    ctx_pct: float,
+) -> str:
+    """Build minimal one-liner: context %, cost, turn count.
+
+    Format:
+    🟢 18.1% ┃ $114.79 ┃ T:435
+    """
+    emoji = _ctx_emoji(ctx_pct)
+    return (
+        f"{emoji} {ctx_pct:.1f}%"
+        f" \u2503 ${cost:.2f}"
+        f" \u2503 T:{totals['turns']}"
+    )
+
+
+def _build_cost_focus_line(
+    totals: dict[str, Any],
+    cost: float,
+    ctx_pct: float,
+) -> str:
+    """Build spending-oriented one-liner with progress bar.
+
+    Format:
+    🟢▓▓░░░░░░░░ 18.1% 181.1K/1.0M ┃ $114.79 ┃ 🔼10.0K 🔽92.3K ┃ Tool:175 End:46
+    """
+    emoji = _ctx_emoji(ctx_pct)
+    bar = _progress_bar(ctx_pct, 10)
+    max_ctx = _get_max_context(totals["model"] or "unknown")
+
+    inp_str = _format_tokens(totals["input_tokens"])
+    out_str = _format_tokens(totals["output_tokens"])
+
+    tools = totals["stop_reasons"].get("tool_use", 0)
+    ends = totals["stop_reasons"].get("end_turn", 0)
+
+    return (
+        f"{emoji}{bar} {ctx_pct:.1f}%"
+        f" {_format_tokens(totals['last_turn_input'])}"
+        f"/{_format_tokens(max_ctx)}"
+        f" \u2503 ${cost:.2f}"
+        f" \u2503 \U0001f53c{inp_str} \U0001f53d{out_str}"
+        f" \u2503 Tool:{tools} End:{ends}"
+    )
+
+
+def _build_compact_style_line(
+    totals: dict[str, Any],
+    cost: float,
+    ctx_pct: float,
+) -> str:
+    """Build dense one-liner without sparkline.
+
+    Format:
+    🟢 18.1% 181.1K/1.0M ┃ 🔼10K 🔽92K ┃ $114 ┃ T:175 E:46 ┃ opus-4-6
+    """
+    emoji = _ctx_emoji(ctx_pct)
+    max_ctx = _get_max_context(totals["model"] or "unknown")
+
+    inp_str = _format_tokens(totals["input_tokens"])
+    out_str = _format_tokens(totals["output_tokens"])
+
+    tools = totals["stop_reasons"].get("tool_use", 0)
+    ends = totals["stop_reasons"].get("end_turn", 0)
+
+    model = (totals["model"] or "unknown").replace("claude-", "")
+
+    return (
+        f"{emoji} {ctx_pct:.1f}%"
+        f" {_format_tokens(totals['last_turn_input'])}"
+        f"/{_format_tokens(max_ctx)}"
+        f" \u2503 \U0001f53c{inp_str} \U0001f53d{out_str}"
+        f" \u2503 ${cost:.0f}"
+        f" \u2503 T:{tools} E:{ends}"
+        f" \u2503 {model}"
+    )
+
+
 def set_metrics_style(style: str) -> None:
     """Set the global one-liner style.
 
-    Valid values: "simple", "ext-context".
+    Valid values: see VALID_STYLES.
     Raises ValueError for unrecognized styles.
     """
     global METRICS_STYLE
-    valid = ("simple", "ext-context")
-    if style not in valid:
+    if style not in VALID_STYLES:
         raise ValueError(
-            f"Unknown metrics style {style!r}; expected one of {valid}"
+            f"Unknown metrics style {style!r}; expected one of {VALID_STYLES}"
         )
     METRICS_STYLE = style
 
@@ -821,6 +979,23 @@ def compute_formatted_metrics(
             session_file, totals["last_turn_input"]
         )
         return _build_ext_context_line(totals, cost, ctx_pct, components)
+
+    if use_style == "ext-all":
+        components = _build_context_components(
+            session_file, totals["last_turn_input"]
+        )
+        return _build_ext_all_line(
+            totals, cost, ctx_pct, duration_min, components
+        )
+
+    if use_style == "minimal":
+        return _build_minimal_line(totals, cost, ctx_pct)
+
+    if use_style == "cost-focus":
+        return _build_cost_focus_line(totals, cost, ctx_pct)
+
+    if use_style == "compact":
+        return _build_compact_style_line(totals, cost, ctx_pct)
 
     return _build_compact_line(totals, cost, ctx_pct, duration_min)
 
