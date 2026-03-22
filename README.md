@@ -1,10 +1,10 @@
 # claude-metrics
 
-Session metrics for Claude Code. See your token usage, costs, and context health after every response.
+Session metrics for the Claude Code VS Code extension. See your token usage, costs, and context health after every response.
 
 ## Quick Install
 
-Paste this in Claude Code and hit enter:
+Paste this in the Claude Code VS Code plugin and hit enter:
 
 ```text
 install https://github.com/emromao/claude-metrics
