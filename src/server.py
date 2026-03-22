@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 17
+# Version: 18
 # Last Changed: 2026-03-22 UTC
 """Claude Metrics — session metrics engine.
 
@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import subprocess
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,6 +66,12 @@ VALID_STYLES = (
     "minimal",
     "cost-focus",
     "compact",
+    "git-status",
+    "git-diff",
+    "git-compact",
+    "ctx-git",
+    "simple-git",
+    "minimal-git",
 )
 
 
@@ -945,6 +952,216 @@ def _build_context_components(
     return components
 
 
+# ── Git helpers ─────────────────────────────────────────────────────────
+
+
+def _run_git(cwd: str, *args: str) -> str:
+    """Run a git command and return stripped stdout, or '' on failure."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", cwd, *args],
+            capture_output=True, text=True, timeout=5,
+        )
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def _get_git_info(session_file: Path) -> dict[str, Any]:
+    """Gather git status from the session's working directory.
+
+    Returns dict with branch, staged, modified, untracked counts,
+    and lines added/removed.
+    """
+    info: dict[str, Any] = {
+        "branch": "",
+        "staged": 0,
+        "modified": 0,
+        "untracked": 0,
+        "lines_added": 0,
+        "lines_removed": 0,
+        "files_changed": 0,
+    }
+    cwd = _get_cwd_from_session(session_file)
+    if not cwd:
+        return info
+
+    info["branch"] = _run_git(cwd, "branch", "--show-current") or "detached"
+
+    # Staged files (cached)
+    staged_out = _run_git(cwd, "diff", "--cached", "--numstat")
+    if staged_out:
+        info["staged"] = len(staged_out.splitlines())
+
+    # Modified (unstaged, tracked)
+    modified_out = _run_git(cwd, "diff", "--numstat")
+    if modified_out:
+        lines = modified_out.splitlines()
+        info["modified"] = len(lines)
+        for line in lines:
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                try:
+                    info["lines_added"] += int(parts[0])
+                    info["lines_removed"] += int(parts[1])
+                except ValueError:
+                    pass  # binary files show "-"
+
+    # Also count staged lines
+    staged_diff = _run_git(cwd, "diff", "--cached", "--numstat")
+    if staged_diff:
+        for line in staged_diff.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                try:
+                    info["lines_added"] += int(parts[0])
+                    info["lines_removed"] += int(parts[1])
+                except ValueError:
+                    pass
+
+    info["files_changed"] = info["staged"] + info["modified"]
+
+    # Untracked files
+    untracked_out = _run_git(cwd, "ls-files", "--others", "--exclude-standard")
+    if untracked_out:
+        info["untracked"] = len(untracked_out.splitlines())
+
+    return info
+
+
+def _git_summary(git: dict[str, Any]) -> str:
+    """Build a short git change summary like '✎3 ✚2 ?1'."""
+    parts: list[str] = []
+    if git["staged"]:
+        parts.append(f"\u270e{git['staged']}")     # ✎ staged
+    if git["modified"]:
+        parts.append(f"\u271a{git['modified']}")    # ✚ modified
+    if git["untracked"]:
+        parts.append(f"?{git['untracked']}")
+    return " ".join(parts) if parts else "\u2713"   # ✓ clean
+
+
+# ── Git style builders ──────────────────────────────────────────────────
+
+
+def _build_git_status_line(git: dict[str, Any]) -> str:
+    """Git-only: branch + working tree state.
+
+    Format:
+    🔀 master ┃ ✎ 3 staged ┃ ✚ 2 modified ┃ ? 1 untracked
+    """
+    parts = [f"\U0001f500 {git['branch']}"]
+    if git["staged"]:
+        parts.append(f"\u270e {git['staged']} staged")
+    if git["modified"]:
+        parts.append(f"\u271a {git['modified']} modified")
+    if git["untracked"]:
+        parts.append(f"? {git['untracked']} untracked")
+    if not git["staged"] and not git["modified"] and not git["untracked"]:
+        parts.append("\u2713 clean")
+    return f" \u2503 ".join(parts)
+
+
+def _build_git_diff_line(git: dict[str, Any]) -> str:
+    """Git-only: branch + lines changed.
+
+    Format:
+    🔀 master ┃ +142 -38 ┃ 3 files changed
+    """
+    return (
+        f"\U0001f500 {git['branch']}"
+        f" \u2503 +{git['lines_added']} -{git['lines_removed']}"
+        f" \u2503 {git['files_changed']} files changed"
+    )
+
+
+def _build_git_compact_line(git: dict[str, Any]) -> str:
+    """Git-only: dense summary.
+
+    Format:
+    🔀 master ┃ S:3 M:2 U:1 ┃ +142/-38
+    """
+    return (
+        f"\U0001f500 {git['branch']}"
+        f" \u2503 S:{git['staged']} M:{git['modified']}"
+        f" U:{git['untracked']}"
+        f" \u2503 +{git['lines_added']}/-{git['lines_removed']}"
+    )
+
+
+def _build_ctx_git_line(
+    totals: dict[str, Any],
+    cost: float,
+    ctx_pct: float,
+    git: dict[str, Any],
+) -> str:
+    """Mixed: context health + git at a glance.
+
+    Format:
+    🟢▓▓░░░░░░░░ 21% 212K/1M ┃ $185 ┃ 🔀 master ┃ ✎3 ✚2 ?1
+    """
+    emoji = _ctx_emoji(ctx_pct)
+    bar = _progress_bar(ctx_pct, 10)
+    max_ctx = _get_max_context(totals["model"] or "unknown")
+    return (
+        f"{emoji}{bar} {ctx_pct:.0f}%"
+        f" {_format_tokens(totals['last_turn_input'])}"
+        f"/{_format_tokens(max_ctx)}"
+        f" \u2503 ${cost:.0f}"
+        f" \u2503 \U0001f500 {git['branch']}"
+        f" \u2503 {_git_summary(git)}"
+    )
+
+
+def _build_simple_git_line(
+    totals: dict[str, Any],
+    cost: float,
+    ctx_pct: float,
+    git: dict[str, Any],
+) -> str:
+    """Mixed: full simple style + branch and changes.
+
+    Format:
+    🟢▓▓░░░░░░░░ 21% 212K/1M ┃ 🔼10K 🔽125K ┃ $185 ┃ Tool:231 ┃ 🔀 master ✎3 ✚2
+    """
+    emoji = _ctx_emoji(ctx_pct)
+    bar = _progress_bar(ctx_pct, 10)
+    max_ctx = _get_max_context(totals["model"] or "unknown")
+    inp_str = _format_tokens(totals["input_tokens"])
+    out_str = _format_tokens(totals["output_tokens"])
+    tools = totals["stop_reasons"].get("tool_use", 0)
+    return (
+        f"{emoji}{bar} {ctx_pct:.0f}%"
+        f" {_format_tokens(totals['last_turn_input'])}"
+        f"/{_format_tokens(max_ctx)}"
+        f" \u2503 \U0001f53c{inp_str} \U0001f53d{out_str}"
+        f" \u2503 ${cost:.0f}"
+        f" \u2503 Tool:{tools}"
+        f" \u2503 \U0001f500 {git['branch']} {_git_summary(git)}"
+    )
+
+
+def _build_minimal_git_line(
+    totals: dict[str, Any],
+    cost: float,
+    ctx_pct: float,
+    git: dict[str, Any],
+) -> str:
+    """Mixed: essentials + git.
+
+    Format:
+    🟢 21% ┃ $185 ┃ T:508 ┃ 🔀 master +142/-38
+    """
+    emoji = _ctx_emoji(ctx_pct)
+    return (
+        f"{emoji} {ctx_pct:.0f}%"
+        f" \u2503 ${cost:.0f}"
+        f" \u2503 T:{totals['turns']}"
+        f" \u2503 \U0001f500 {git['branch']}"
+        f" +{git['lines_added']}/-{git['lines_removed']}"
+    )
+
+
 # ── Standalone helpers (used by stop hook via import) ────────────────────
 
 
@@ -996,6 +1213,26 @@ def compute_formatted_metrics(
 
     if use_style == "compact":
         return _build_compact_style_line(totals, cost, ctx_pct)
+
+    # Git styles — gather git info lazily (only when needed)
+    if use_style in (
+        "git-status", "git-diff", "git-compact",
+        "ctx-git", "simple-git", "minimal-git",
+    ):
+        git = _get_git_info(session_file)
+
+        if use_style == "git-status":
+            return _build_git_status_line(git)
+        if use_style == "git-diff":
+            return _build_git_diff_line(git)
+        if use_style == "git-compact":
+            return _build_git_compact_line(git)
+        if use_style == "ctx-git":
+            return _build_ctx_git_line(totals, cost, ctx_pct, git)
+        if use_style == "simple-git":
+            return _build_simple_git_line(totals, cost, ctx_pct, git)
+        if use_style == "minimal-git":
+            return _build_minimal_git_line(totals, cost, ctx_pct, git)
 
     return _build_compact_line(totals, cost, ctx_pct, duration_min)
 
