@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Metrics Stop hook (direct mode) — computes and injects metrics inline.
-# Version: 2
+# Metrics Stop hook — computes and injects metrics inline.
+# Version: 3
 # Last Changed: 2026-03-22 UTC
 #
 # Computes the metrics one-liner directly via server.py import (~200ms).
-# No MCP server or extra LLM turn required.
+# No extra dependencies or background processes required.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SERVER_PY="${HOME}/.claude/mcp-servers/claude-metrics/server.py"
+SERVER_PY="${HOME}/.claude/lib/claude-metrics/server.py"
 
 # Detect available Python binary (cross-platform: Windows, macOS, Linux).
 function _find_python() {
@@ -26,6 +26,7 @@ function _find_python() {
 }
 
 PYTHON=""
+# shellcheck disable=SC2310
 PYTHON=$(_find_python) || true
 if [[ -z "${PYTHON}" ]]; then
   # No Python — can't run, allow Claude to stop
@@ -75,10 +76,10 @@ if 'ctx:' in msg and '%' in msg and 'Tools:' in msg:
 
 # Metrics not found — compute directly via importlib (explicit file load)
 server_file = os.path.expanduser(
-    '~/.claude/mcp-servers/claude-metrics/server.py'
+    '~/.claude/lib/claude-metrics/server.py'
 )
 if not os.path.isfile(server_file):
-    print('BLOCK_FALLBACK')
+    print('ALLOW')
     sys.exit(0)
 
 try:
@@ -89,9 +90,9 @@ try:
     if formatted:
         print('METRICS:' + formatted)
     else:
-        print('BLOCK_FALLBACK')
+        print('ALLOW')
 except Exception:
-    print('BLOCK_FALLBACK')
+    print('ALLOW')
 " 2>/dev/null || echo "ALLOW")
 
 # Parse the result
@@ -105,16 +106,11 @@ if [[ "${RESULT}" == METRICS:* ]]; then
   cat <<HOOK_JSON
 {
   "decision": "block",
-  "reason": "[METRICS] Append this exact line at the very end of your response (do not call any MCP tool, just paste it):\n\n\`${METRICS_LINE}\`"
+  "reason": "[METRICS] Append this exact line at the very end of your response (do not call any tool, just paste it):\n\n\`${METRICS_LINE}\`"
 }
 HOOK_JSON
   exit 0
 fi
 
-# Fallback: tell Claude to call the MCP tool if registered
-cat <<'HOOK_JSON'
-{
-  "decision": "block",
-  "reason": "[METRICS] Append the session metrics one-liner. Call mcp__claude-metrics__get_session_metrics and paste the 'formatted' field at the end of your response. Skip only for quick clarifications or multi-step tool chains."
-}
-HOOK_JSON
+# If we get here something unexpected happened — allow stop
+exit 0

@@ -22,7 +22,7 @@ directly via Python.
 PYTHONIOENCODING=utf-8 python -c "
 import importlib.util, os
 spec = importlib.util.spec_from_file_location('server',
-    os.path.expanduser('~/.claude/mcp-servers/claude-metrics/server.py'))
+    os.path.expanduser('~/.claude/lib/claude-metrics/server.py'))
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 detail = mod.compute_detail_metrics()

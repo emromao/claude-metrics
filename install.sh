@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Version: 14
+# Version: 15
 # Last Changed: 2026-03-22 UTC
 # Installs claude-metrics: copies server.py and the stop hook.
-# No MCP server, no extra dependencies — Python 3.8+ stdlib only.
+# No extra dependencies — Python 3.8+ stdlib only.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_DIR="${HOME}/.claude"
-SERVER_DIR="${CLAUDE_DIR}/mcp-servers/claude-metrics"
+SERVER_DIR="${CLAUDE_DIR}/lib/claude-metrics"
 HOOKS_DIR="${CLAUDE_DIR}/hooks"
 
 function usage() {
@@ -21,7 +21,7 @@ Usage: install.sh [OPTIONS]
 Installs the claude-metrics stop hook for Claude Code.
 
 The hook automatically appends a metrics one-liner to every
-response (~200ms, no MCP server, no extra dependencies).
+response (~200ms, no extra dependencies).
 
 Options:
   --uninstall   Remove installed files

@@ -2,7 +2,7 @@
 
 A lightweight stop hook that gives Claude Code real-time visibility into its own session — token usage, costs, context window health, and activity breakdown.
 
-No MCP server, no extra dependencies — just a bash hook and Python 3.8+.
+No extra dependencies — just a bash hook and Python 3.8+.
 
 ## Example output
 
@@ -41,7 +41,7 @@ bash install.sh
 
 This copies three files:
 
-1. `server.py` to `~/.claude/mcp-servers/claude-metrics/` (metrics engine)
+1. `server.py` to `~/.claude/lib/claude-metrics/` (metrics engine)
 2. `metrics-stop-direct.sh` to `~/.claude/hooks/` (stop hook)
 3. `SKILL.md` to `~/.claude/skills/metrics/` (`/metrics` command)
 

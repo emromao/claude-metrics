@@ -1,4 +1,4 @@
-# Rendered from pipeline-templates v2 on 2026-03-22 03:14 UTC -- DO NOT EDIT DIRECTLY
+# Rendered from pipeline-templates v2 on 2026-03-22 17:21 UTC -- DO NOT EDIT DIRECTLY
 # Source: templates/security-scan.yml.j2 | Config: .pipeline.json
 name: Security Scan
 on:
