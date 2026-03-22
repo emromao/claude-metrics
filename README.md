@@ -1,34 +1,34 @@
 # claude-metrics
 
-A lightweight stop hook that gives Claude Code real-time visibility into its own session — token usage, costs, context window health, and activity breakdown.
+Session metrics for Claude Code. See your token usage, costs, and context health after every response.
 
-No extra dependencies — just a bash hook and Python 3.8+.
+![Architecture](https://draw.emromao.com/api/drawing/19c6f8d3-8557-4b8f-b66e-1f166cceb31c/svg)
 
-## Example output
+## What it looks like
 
-**Compact one-liner** (appended automatically to every response):
+After every response, a one-liner is appended automatically:
 
 ```text
-🟢▓▓▓░░░░░░░ 9.1% 91.4K/1M │ 🔼1.6K 🔽74K │ $40.14 │ Tools:87 End:28 │ opus-4-6 v2.1.79 │ ▁▂▃▃▂ ↘ -1.8%
+🟢▓▓▓░░░░░░░ 9.1% 91.4K/1M ┃ 🔼1.6K 🔽74K ┃ $40.14 ┃ Tool:87 End:28 ┃ opus-4-6 v2.1.79 ┃ ▁▂▃▃▂ ↘ -1.8%
 ```
 
-**Detailed view** (via `/metrics` skill):
+Type `/metrics` for the full breakdown:
 
 ```text
-┌─────────────────────────────────────────────────────────┐
-│ ◆ Claude Session Metrics                                │
-├─────────────────────────────────────────────────────────┤
-│ 🤖 Model:     claude-opus-4-6                           │
-│ 📦 Version:   2.1.81  │  🔗 claude-vscode               │
-│ ⏱  Duration:  45 min  │  🔄 Turns: 32                   │
-│ 💰 Cost:      $40.14                                    │
-├─────────────────────────────────────────────────────────┤
-│ 📊 Context Composition (estimated)                      │
-│   Global CLAUDE.md               4.5K    2.6%           │
-│   MCP schemas (×9 servers)       4.5K    2.6%           │
-│   System prompt & tools          3.0K    1.7%           │
-│   Conversation history         161.5K   93.1%           │
-└─────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────
+│ ◆ Claude Session Metrics
+├───────────────────────────────────────────────────────
+│ 🤖 Model:     claude-opus-4-6
+│ 📦 Version:   2.1.81  │  🔗 claude-vscode
+│ ⏱  Duration:  45 min  │  🔄 Turns: 32
+│ 💰 Cost:      $40.14
+├───────────────────────────────────────────────────────
+│ 📊 Context Composition (estimated)
+│   Global CLAUDE.md               4.5K    2.6%
+│   MCP schemas (×9 servers)       4.5K    2.6%
+│   System prompt & tools          3.0K    1.7%
+│   Conversation history         161.5K   93.1%
+└───────────────────────────────────────────────────────
 ```
 
 ## Install
@@ -39,65 +39,78 @@ cd claude-metrics
 bash install.sh
 ```
 
-This copies three files:
+This copies three files into `~/.claude/` (nothing else is touched):
 
-1. `server.py` to `~/.claude/lib/claude-metrics/` (metrics engine)
-2. `metrics-stop-direct.sh` to `~/.claude/hooks/` (stop hook)
-3. `SKILL.md` to `~/.claude/skills/metrics/` (`/metrics` command)
+| File                     | Location                        | Purpose            |
+| ------------------------ | ------------------------------- | ------------------ |
+| `server.py`              | `~/.claude/lib/claude-metrics/` | Metrics engine     |
+| `metrics-stop-direct.sh` | `~/.claude/hooks/`              | Stop hook          |
+| `SKILL.md`               | `~/.claude/skills/metrics/`     | `/metrics` command |
 
-### Enable the stop hook
+### Activate
 
-Add this to your `~/.claude/settings.json`:
+Add the stop hook to your `~/.claude/settings.json` under `hooks`:
 
 ```json
-{
-  "hooks": {
-    "Stop": [{
-      "hooks": [{
-        "type": "command",
-        "command": "bash ~/.claude/hooks/metrics-stop-direct.sh",
-        "timeout": 10
-      }]
-    }]
-  }
-}
+"Stop": [{
+  "hooks": [{
+    "type": "command",
+    "command": "bash ~/.claude/hooks/metrics-stop-direct.sh",
+    "timeout": 10
+  }]
+}]
 ```
 
-Then restart Claude Code.
+Then add this to your CLAUDE.md (global `~/.claude/CLAUDE.md` or per-project):
 
-## Usage
+```markdown
+## Session Metrics
 
-The stop hook automatically appends a metrics one-liner to every response.
-For detailed stats, type `/metrics` in the conversation.
+The metrics one-liner is appended automatically by the stop hook.
+Do NOT manually append metrics — the hook handles it.
 
-## Requirements
+**CRITICAL: The metrics line must appear exactly ONCE per user interaction.**
+When responding to subsequent hook blocks, do NOT paste the metrics line again.
+```
 
-- **Python 3.8+** (`python3`, `python`, or `py` — auto-detected)
-- **Claude Code** (CLI or VS Code extension)
-- No pip packages needed
+Restart Claude Code.
+
+### Or just ask Claude
+
+Paste this in your Claude Code prompt:
+
+> Install <https://github.com/emromao/claude-metrics>
+
+Claude will clone the repo, run `install.sh`, and configure the hook for you.
+
+## One-liner styles
+
+Switch styles anytime with `/metrics-style`:
+
+| Style                | Example                                                                       |
+| -------------------- | ----------------------------------------------------------------------------- |
+| **simple** (default) | `🟢▓▓░░░ 18% 181K/1M ┃ 🔼10K 🔽92K ┃ $114 ┃ Tool:175 End:46 ┃ opus-4-6`    |
+| **ext-context**      | `🟢▓▓░░░ 18% 181K/1M [ 3% CLAUDE.md \| 2% MCP \| 93% CONVO ]`               |
+| **ext-all**          | `🟢▓▓░░░ 18% [ 3% CLAUDE.md \| 93% CONVO ] ┃ 🔼10K ┃ $114 ┃ Tool:175`      |
+| **minimal**          | `🟢 18% ┃ $114 ┃ T:435`                                                      |
+| **cost-focus**       | `🟢▓▓░░░ 18% 181K/1M ┃ $114 ┃ 🔼10K 🔽92K ┃ Tool:175`                       |
+| **compact**          | `🟢 18% 181K/1M ┃ 🔼10K 🔽92K ┃ $114 ┃ T:175 E:46 ┃ opus-4-6`              |
 
 ## How it works
 
-Claude Code writes a JSONL session file for each conversation at
-`~/.claude/projects/<workspace>/`. The metrics engine:
+Claude Code writes a JSONL session file for each conversation. The stop hook:
 
-1. Finds the most recently modified session file
-2. Parses every line to accumulate token counts, cache stats, and activity
-3. Computes cost using per-model pricing (Opus, Sonnet, Haiku)
-4. Estimates context window composition (CLAUDE.md, memory, MCP schemas)
-5. Returns a formatted one-liner or full detail view
+1. Fires when Claude finishes responding
+2. Calls `server.py` which parses the JSONL for token counts, costs, and activity
+3. Returns a block response with the formatted one-liner
+4. Claude pastes it at the end of the response
 
-The stop hook intercepts Claude's stop signal, checks if the metrics
-one-liner is already present, and if not computes it directly (~200ms).
+No MCP server, no background processes, no pip packages. Just a bash script that calls Python.
 
-## Security
+## Requirements
 
-- Only reads Claude's own session files (under `~/.claude/`)
-- No network access, no external APIs, no data leaves your machine
-- server.py loaded via `importlib` with explicit file path
-- Hook input size-limited (2MB max)
-- All errors default to "allow" — never blocks indefinitely
-- `stop_hook_active` flag prevents infinite loops
+- Python 3.8+ (auto-detected: `python3`, `python`, or `py`)
+- Claude Code (CLI or VS Code)
 
 ## Uninstall
 
@@ -105,23 +118,13 @@ one-liner is already present, and if not computes it directly (~200ms).
 bash install.sh --uninstall
 ```
 
-Then remove the hook entry from `~/.claude/settings.json`.
+Then remove the Stop hook entry from `settings.json` and the Session Metrics section from CLAUDE.md.
 
-## Project structure
+## Architecture
 
-```text
-claude-metrics/
-├── src/
-│   └── server.py                # Metrics engine (stdlib only)
-├── hooks/
-│   └── metrics-stop-direct.sh   # Stop hook (~200ms)
-├── skills/
-│   └── metrics/
-│       └── SKILL.md             # /metrics skill for detailed view
-├── install.sh                   # One-liner installer
-└── .gitea/workflows/
-    └── security-scan.yml        # CI: Trivy SCA, Gitleaks, SBOM
-```
+[View the full architecture diagram](https://draw.emromao.com/editor/19c6f8d3-8557-4b8f-b66e-1f166cceb31c)
+
+The stop hook computes metrics inline (~200ms) by importing `server.py` directly — no MCP server or extra LLM turn needed. A 15-second marker file prevents duplicates when other stop hooks (like cognee) cause re-fire cycles.
 
 ## License
 

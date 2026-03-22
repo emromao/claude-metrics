@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Metrics Stop hook — computes and injects metrics inline.
-# Version: 6
+# Version: 9
 # Last Changed: 2026-03-22 UTC
 #
 # Computes the metrics one-liner directly via server.py import (~200ms).
 # Self-contained — works alongside any other stop hooks without conflicts.
 #
-# Uses a timestamp marker file to ensure only ONE metrics line per
-# interaction, even when other parallel stop hooks cause re-fire cycles.
+# Dedup: uses a 60-second marker file to prevent duplicate injection when
+# parallel stop hooks (e.g. cognee) cause additional stop cycles.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -35,15 +35,11 @@ if [[ -z "${PYTHON}" ]]; then
   exit 0
 fi
 
-# ── Marker-based dedup ──────────────────────────────────────────────────
-# If we already injected metrics in the last 60s, skip entirely.
-# This prevents duplicates when other stop hooks (e.g. cognee, linters)
-# cause additional stop cycles in the same interaction.
-# Writes epoch seconds to the file (avoids 'date -r' portability issues).
+# Dedup: skip if we already injected metrics in the last 60 seconds.
 if [[ -f "${MARKER_FILE}" ]]; then
   last_inject=$(cat "${MARKER_FILE}" 2>/dev/null || echo "0")
   now=$(date +%s)
-  if (( now - last_inject < 60 )); then
+  if (( now - last_inject < 15 )); then
     exit 0
   fi
 fi
@@ -63,21 +59,15 @@ except Exception:
     print('ALLOW')
     sys.exit(0)
 
-# Re-fire guard: if Claude is retrying after a block, allow stop
+# Guard: if Claude is retrying after a block, allow stop
 if data.get('stop_hook_active', False):
     print('ALLOW')
     sys.exit(0)
 
 msg = data.get('last_assistant_message', '')
 
-# Check if metrics one-liner is already present in the response
-# Heavy pipe U+2503 or light pipe U+2502
+# Check if metrics already in this response (progress bar + % + pipe)
 if ('\u2593' in msg or '\u2591' in msg) and '%' in msg and ('\u2503' in msg or '\u2502' in msg):
-    print('ALLOW')
-    sys.exit(0)
-
-# ASCII fallback pattern
-if 'ctx:' in msg and '%' in msg and 'Tool:' in msg:
     print('ALLOW')
     sys.exit(0)
 
@@ -106,12 +96,12 @@ fi
 
 if [[ "${RESULT}" == BLOCK:* ]]; then
   METRICS_LINE="${RESULT#BLOCK:}"
-  # Write epoch to marker BEFORE outputting block
-  date +%s > "${MARKER_FILE}"
+  # Write marker BEFORE outputting block
+  date +%s > "${MARKER_FILE}" 2>/dev/null || true
   cat <<HOOK_JSON
 {
   "decision": "block",
-  "reason": "[METRICS] Append this exact line at the very end of your response (do not call any tool, just paste it):\n\n\`${METRICS_LINE}\`"
+  "reason": "[METRICS] Append this line ONCE at the very end of your response. Do NOT paste it again if you already pasted it. Do NOT paste it in follow-up responses to other hooks.\n\n\`${METRICS_LINE}\`"
 }
 HOOK_JSON
   exit 0
