@@ -395,23 +395,20 @@ def _compute_duration(first_ts: str, last_ts: str) -> float:
 def _sparkline(history: list[tuple[int, int]], max_ctx: int) -> str:
     """Build a sparkline string from context history data points.
 
-    Uses block characters to show relative context growth over time.
-    Normalizes to the data range (min-max of history) so the sparkline
-    shows meaningful variation even when context is a small fraction
-    of the total window.
+    Uses block characters to show context growth over time.
+    Normalizes to 0-max so all blocks grow upward from a common
+    baseline — no values cross the x-axis.
     """
     blocks = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
     if not history:
         return ""
     values = [ctx for _, ctx in history]
-    lo = min(values)
     hi = max(values)
-    span = hi - lo
-    if span == 0:
-        return blocks[3] * len(values)  # flat line in the middle
+    if hi == 0:
+        return blocks[0] * len(values)
     result = []
     for v in values:
-        idx = min(int((v - lo) / span * (len(blocks) - 1)), len(blocks) - 1)
+        idx = min(int(v / hi * (len(blocks) - 1)), len(blocks) - 1)
         result.append(blocks[idx])
     return "".join(result)
 
